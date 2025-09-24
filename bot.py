@@ -2,22 +2,26 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pymongo import MongoClient
 from config import BOT_TOKEN, API_ID, API_HASH, MONGO_URL
-import os
 
-# Initialize Pyrogram bot
-app = Client("vote_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# ------------------- Initialize Bot -------------------
+app = Client(
+    ":memory:",  # in-memory session avoids BadMsgNotification
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN,
+    workdir="./"  # optional for Heroku dyno
+)
 
-# Connect to MongoDB
+# ------------------- MongoDB Setup -------------------
 mongo_client = MongoClient(MONGO_URL)
 db = mongo_client["vote_bot_db"]
 votes_col = db["votes"]
 sessions_col = db["vote_sessions"]
 
-# ------------------- Start / Welcome -------------------
+# ------------------- /start Command -------------------
 @app.on_message(filters.private & filters.command("start"))
 def start(client, message):
     if len(message.command) > 1 and message.command[1].startswith("vote_"):
-        # User clicked participation link
         chat_id = int(message.command[1].split("_")[1])
         user_id = message.from_user.id
         username = message.from_user.username or message.from_user.first_name
@@ -31,14 +35,13 @@ def start(client, message):
         )
         message.reply("Click the button to cast your vote:", reply_markup=keyboard)
     else:
-        # Normal /start
         message.reply(
             f"👋 Hi {message.from_user.first_name}!\n\n"
             "I am Vote Bot 🤖. I can help you create inline voting in your groups or channels.\n\n"
             "Use /help to see available commands."
         )
 
-# ------------------- Help Command -------------------
+# ------------------- /help Command -------------------
 @app.on_message(filters.private & filters.command("help"))
 def help_command(client, message):
     message.reply(
@@ -52,7 +55,7 @@ def help_command(client, message):
         "3️⃣ Share the generated link for participants."
     )
 
-# ------------------- Vote Command -------------------
+# ------------------- /vote Command -------------------
 @app.on_message(filters.private & filters.command("vote"))
 def create_vote(client, message):
     if len(message.command) != 2:
@@ -62,7 +65,6 @@ def create_vote(client, message):
     chat_id = int(message.command[1])
     user_id = message.from_user.id
 
-    # Ask admin to make bot admin
     message.reply(
         "⚠️ Please make me an admin in your group/channel first, then send the chat ID using this command.\n"
         f"Example: /vote {chat_id}"
@@ -74,7 +76,6 @@ def create_vote(client, message):
         upsert=True
     )
 
-    # Send participation link
     link = f"https://t.me/{app.username}?start=vote_{chat_id}"
     message.reply(f"✅ Voting created!\nShare this link to participate:\n{link}")
 
@@ -98,7 +99,7 @@ def vote_callback(client, callback_query):
     callback_query.answer("✅ Vote recorded!", show_alert=True)
     callback_query.message.edit("Thanks for voting!")
 
-# ------------------- Result Command -------------------
+# ------------------- /result Command -------------------
 @app.on_message(filters.private & filters.command("result"))
 def result(client, message):
     if len(message.command) != 2:
@@ -121,6 +122,6 @@ def result(client, message):
 # ------------------- Run Bot -------------------
 if __name__ == "__main__":
     app.start()
-    print("Bot started...")
-    app.idle()
+    print("Bot started successfully ✅")
+    app.idle()  # keep bot running
     app.stop()
