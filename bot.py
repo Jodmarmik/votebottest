@@ -1,51 +1,58 @@
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pymongo import MongoClient
-import os
 from config import BOT_TOKEN, API_ID, API_HASH, MONGO_URL
+import os
 
+# Initialize Pyrogram bot
 app = Client("vote_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# MongoDB connection
+# Connect to MongoDB
 mongo_client = MongoClient(MONGO_URL)
 db = mongo_client["vote_bot_db"]
 votes_col = db["votes"]
 sessions_col = db["vote_sessions"]
 
-# Welcome message on /start
+# ------------------- Start / Welcome -------------------
 @app.on_message(filters.private & filters.command("start"))
 def start(client, message):
     if len(message.command) > 1 and message.command[1].startswith("vote_"):
+        # User clicked participation link
         chat_id = int(message.command[1].split("_")[1])
         user_id = message.from_user.id
         username = message.from_user.username or message.from_user.first_name
+
         if votes_col.find_one({"chat_id": chat_id, "user_id": user_id}):
-            message.reply("You already voted in this chat.")
+            message.reply("❌ You already voted in this chat.")
             return
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Vote ✅", callback_data=f"vote_{chat_id}_{user_id}")]])
+
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Vote ✅", callback_data=f"vote_{chat_id}_{user_id}")]]
+        )
         message.reply("Click the button to cast your vote:", reply_markup=keyboard)
     else:
+        # Normal /start
         message.reply(
             f"👋 Hi {message.from_user.first_name}!\n\n"
             "I am Vote Bot 🤖. I can help you create inline voting in your groups or channels.\n\n"
             "Use /help to see available commands."
         )
 
-# /help command
+# ------------------- Help Command -------------------
 @app.on_message(filters.private & filters.command("help"))
 def help_command(client, message):
     message.reply(
         "📌 *Vote Bot Usage Guide*\n\n"
-        "/vote <chat_id> - Create a new vote. Make me admin in your group/channel and provide the chat ID.\n"
-        "/result <chat_id> - Show top 10 users with highest votes in a chat.\n"
+        "/vote <chat_id> - Create a new vote. Make me admin in your group/channel first.\n"
+        "/result <chat_id> - Show top 10 users with highest votes.\n"
         "/help - Show this guide.\n\n"
         "Steps to create a vote:\n"
         "1️⃣ Make the bot an admin in your group/channel.\n"
-        "2️⃣ Send /vote <chat_id> (you can get chat ID by forwarding a message from group to @userinfobot or using -100xxxx format).\n"
+        "2️⃣ Send /vote <chat_id> (get chat ID with -100xxxx format).\n"
         "3️⃣ Share the generated link for participants."
     )
 
-# /vote command
+# ------------------- Vote Command -------------------
 @app.on_message(filters.private & filters.command("vote"))
 def create_vote(client, message):
     if len(message.command) != 2:
@@ -55,6 +62,7 @@ def create_vote(client, message):
     chat_id = int(message.command[1])
     user_id = message.from_user.id
 
+    # Ask admin to make bot admin
     message.reply(
         "⚠️ Please make me an admin in your group/channel first, then send the chat ID using this command.\n"
         f"Example: /vote {chat_id}"
@@ -66,10 +74,11 @@ def create_vote(client, message):
         upsert=True
     )
 
+    # Send participation link
     link = f"https://t.me/{app.username}?start=vote_{chat_id}"
     message.reply(f"✅ Voting created!\nShare this link to participate:\n{link}")
 
-# Voting callback
+# ------------------- Voting Callback -------------------
 @app.on_callback_query(filters.regex(r"vote_\d+_\d+"))
 def vote_callback(client, callback_query):
     chat_id = int(callback_query.data.split("_")[1])
@@ -77,14 +86,19 @@ def vote_callback(client, callback_query):
     username = callback_query.from_user.username or callback_query.from_user.first_name
 
     if votes_col.find_one({"chat_id": chat_id, "user_id": user_id}):
-        callback_query.answer("You already voted!", show_alert=True)
+        callback_query.answer("❌ You already voted!", show_alert=True)
         return
 
-    votes_col.insert_one({"chat_id": chat_id, "user_id": user_id, "username": username, "vote_count": 1})
-    callback_query.answer("Vote recorded!", show_alert=True)
+    votes_col.insert_one({
+        "chat_id": chat_id,
+        "user_id": user_id,
+        "username": username,
+        "vote_count": 1
+    })
+    callback_query.answer("✅ Vote recorded!", show_alert=True)
     callback_query.message.edit("Thanks for voting!")
 
-# /result command
+# ------------------- Result Command -------------------
 @app.on_message(filters.private & filters.command("result"))
 def result(client, message):
     if len(message.command) != 2:
@@ -104,4 +118,9 @@ def result(client, message):
 
     message.reply(result_text)
 
-app.run()
+# ------------------- Run Bot -------------------
+if __name__ == "__main__":
+    app.start()
+    print("Bot started...")
+    app.idle()
+    app.stop()
