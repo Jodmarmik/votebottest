@@ -1,2 +1,3 @@
 pyrogram==2.0.44
 tgcrypto==1.4.0
+pymongo==4.5.0
