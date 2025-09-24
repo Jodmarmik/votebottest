@@ -1,78 +1,107 @@
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-import sqlite3
+from pymongo import MongoClient
 import os
-
-# Load config from environment variables
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
+from config import BOT_TOKEN, API_ID, API_HASH, MONGO_URL
 
 app = Client("vote_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-conn = sqlite3.connect("votes.db", check_same_thread=False)
-cursor = conn.cursor()
+# MongoDB connection
+mongo_client = MongoClient(MONGO_URL)
+db = mongo_client["vote_bot_db"]
+votes_col = db["votes"]
+sessions_col = db["vote_sessions"]
 
-# Create tables
-cursor.execute("""CREATE TABLE IF NOT EXISTS votes (
-    chat_id INTEGER, user_id INTEGER, username TEXT, vote_count INTEGER DEFAULT 0, UNIQUE(chat_id, user_id)
-)""")
-cursor.execute("""CREATE TABLE IF NOT EXISTS vote_sessions (
-    chat_id INTEGER PRIMARY KEY, created_by INTEGER
-)""")
-conn.commit()
+# Welcome message on /start
+@app.on_message(filters.private & filters.command("start"))
+def start(client, message):
+    if len(message.command) > 1 and message.command[1].startswith("vote_"):
+        chat_id = int(message.command[1].split("_")[1])
+        user_id = message.from_user.id
+        username = message.from_user.username or message.from_user.first_name
+        if votes_col.find_one({"chat_id": chat_id, "user_id": user_id}):
+            message.reply("You already voted in this chat.")
+            return
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Vote ✅", callback_data=f"vote_{chat_id}_{user_id}")]])
+        message.reply("Click the button to cast your vote:", reply_markup=keyboard)
+    else:
+        message.reply(
+            f"👋 Hi {message.from_user.first_name}!\n\n"
+            "I am Vote Bot 🤖. I can help you create inline voting in your groups or channels.\n\n"
+            "Use /help to see available commands."
+        )
 
-@app.on_message(filters.command("vote") & filters.private)
+# /help command
+@app.on_message(filters.private & filters.command("help"))
+def help_command(client, message):
+    message.reply(
+        "📌 *Vote Bot Usage Guide*\n\n"
+        "/vote <chat_id> - Create a new vote. Make me admin in your group/channel and provide the chat ID.\n"
+        "/result <chat_id> - Show top 10 users with highest votes in a chat.\n"
+        "/help - Show this guide.\n\n"
+        "Steps to create a vote:\n"
+        "1️⃣ Make the bot an admin in your group/channel.\n"
+        "2️⃣ Send /vote <chat_id> (you can get chat ID by forwarding a message from group to @userinfobot or using -100xxxx format).\n"
+        "3️⃣ Share the generated link for participants."
+    )
+
+# /vote command
+@app.on_message(filters.private & filters.command("vote"))
 def create_vote(client, message):
     if len(message.command) != 2:
         message.reply("Usage: /vote <chat_id>")
         return
+
     chat_id = int(message.command[1])
     user_id = message.from_user.id
-    cursor.execute("INSERT OR IGNORE INTO vote_sessions(chat_id, created_by) VALUES (?, ?)", (chat_id, user_id))
-    conn.commit()
+
+    message.reply(
+        "⚠️ Please make me an admin in your group/channel first, then send the chat ID using this command.\n"
+        f"Example: /vote {chat_id}"
+    )
+
+    sessions_col.update_one(
+        {"chat_id": chat_id},
+        {"$set": {"created_by": user_id}},
+        upsert=True
+    )
+
     link = f"https://t.me/{app.username}?start=vote_{chat_id}"
-    message.reply(f"Voting created! Share this link to participate:\n{link}")
+    message.reply(f"✅ Voting created!\nShare this link to participate:\n{link}")
 
-@app.on_message(filters.private & filters.command("start"))
-def start(client, message):
-    if not message.command[1].startswith("vote_"):
-        return
-    chat_id = int(message.command[1].split("_")[1])
-    user_id = message.from_user.id
-    username = message.from_user.username or message.from_user.first_name
-    cursor.execute("SELECT * FROM votes WHERE chat_id=? AND user_id=?", (chat_id, user_id))
-    if cursor.fetchone():
-        message.reply("You already voted in this chat.")
-        return
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("Vote ✅", callback_data=f"vote_{chat_id}_{user_id}")]])
-    message.reply("Click the button to cast your vote:", reply_markup=keyboard)
-
+# Voting callback
 @app.on_callback_query(filters.regex(r"vote_\d+_\d+"))
 def vote_callback(client, callback_query):
     chat_id = int(callback_query.data.split("_")[1])
     user_id = callback_query.from_user.id
     username = callback_query.from_user.username or callback_query.from_user.first_name
-    cursor.execute("SELECT * FROM votes WHERE chat_id=? AND user_id=?", (chat_id, user_id))
-    if cursor.fetchone():
+
+    if votes_col.find_one({"chat_id": chat_id, "user_id": user_id}):
         callback_query.answer("You already voted!", show_alert=True)
         return
-    cursor.execute("INSERT INTO votes(chat_id, user_id, username, vote_count) VALUES (?, ?, ?, ?)", (chat_id, user_id, username, 1))
-    conn.commit()
+
+    votes_col.insert_one({"chat_id": chat_id, "user_id": user_id, "username": username, "vote_count": 1})
     callback_query.answer("Vote recorded!", show_alert=True)
     callback_query.message.edit("Thanks for voting!")
 
-@app.on_message(filters.command("result") & filters.private)
+# /result command
+@app.on_message(filters.private & filters.command("result"))
 def result(client, message):
+    if len(message.command) != 2:
+        message.reply("Usage: /result <chat_id>")
+        return
+
     chat_id = int(message.command[1])
-    cursor.execute("SELECT username, vote_count FROM votes WHERE chat_id=? ORDER BY vote_count DESC LIMIT 10", (chat_id,))
-    top_users = cursor.fetchall()
+    top_users = list(votes_col.find({"chat_id": chat_id}).sort("vote_count", -1).limit(10))
+
     if not top_users:
         message.reply("No votes yet.")
         return
+
     result_text = "🏆 Top 10 voters:\n\n"
-    for i, (username, count) in enumerate(top_users, start=1):
-        result_text += f"{i}. {username} - {count} vote(s)\n"
+    for i, user in enumerate(top_users, start=1):
+        result_text += f"{i}. {user['username']} - {user['vote_count']} vote(s)\n"
+
     message.reply(result_text)
 
 app.run()
